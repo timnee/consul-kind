@@ -1,0 +1,17 @@
+global:
+  datacenter: dc1
+  tls:
+    enabled: true
+    enableAutoEncrypt: true
+  acls:
+    manageSystemACLs: true
+  gossipEncryption:
+    secretName: consul-gossip-encryption-key
+    secretKey: key
+server:
+  exposeService:
+    enabled: true
+    type: LoadBalancer # default value
+ui:
+  service:
+    type: NodePort

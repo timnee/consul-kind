@@ -1,0 +1,22 @@
+global:
+  enabled: false
+  datacenter: dc1
+  acls:
+    manageSystemACLs: true
+    bootstrapToken:
+      secretName: server-consul-bootstrap-acl-token
+      secretKey: token
+  tls:
+    enabled: true
+    caCert:
+      secretName: server-consul-ca-cert
+      secretKey: tls.crt
+externalServers:
+  enabled: true
+  # This should be any node IP of the first k8s cluster or the load balancer IP if using LoadBalancer service type for the UI.
+  # hosts: ["172.18.255.200"]
+  tlsServerName: server.dc1.consul
+  # The address of the kube API server of this Kubernetes cluster
+  # k8sAuthMethodHost: https://172.18.0.3:6443
+connectInject:
+  enabled: true

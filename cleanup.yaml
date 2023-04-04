@@ -1,0 +1,16 @@
+- name: cleanup clusters
+  hosts: localhost
+  gather_facts: no
+  vars:
+    clusters:
+    - consul-server
+    - consul-client
+
+  tasks:
+  - name: Check if Kind Cluster is running
+    command: kind get clusters
+    register: kind_cluster_running
+  - name: delete consul server cluster
+    when: item in kind_cluster_running.stdout_lines
+    command: kind delete cluster -n {{item}}
+    loop: '{{clusters}}'
