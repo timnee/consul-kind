@@ -47,10 +47,10 @@ spec:
     spec:
       containers:
         - name: static-server
-          image: hashicorp/http-echo:latest
+          image: jxlwqq/http-echo:latest
           args:
-            - -text="hello world"
-            - -listen=:8080
+            - --text="hello world"
+            - --addr=:8080
           ports:
             - containerPort: 8080
               name: http
