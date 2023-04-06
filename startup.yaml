@@ -7,65 +7,83 @@
     - consul-server
     - consul-client
     consul_helm_version: 1.1.1
+    k8s_image: kindest/node:v1.23.17@sha256:e5fd1d9cd7a9a50939f9c005684df5a6d145e8d695e78463637b79464292e66c
 
   tasks:
-  - name: install prereqs
-    pip:
-      name:
-        - kubernetes
-        - netaddr
-  - name: Check if Kind Cluster is running
-    command: kind get clusters
-    register: kind_cluster_running
-  - name: Create consul clusters
-    when: not item in kind_cluster_running.stdout_lines
-    command: kind create cluster -n {{item}}
-    loop: '{{clusters}}'
-  - name: apply metllb
-    kubernetes.core.k8s:
-      context: kind-consul-server
-      src: "{{playbook_dir}}/metallb-native.yaml"
-  - name: wait for ready
-    kubernetes.core.k8s_info:
-      context: kind-consul-server
-      kind: Pod
-      wait: yes
-      label_selectors:
-        - app=metallb
-      namespace: metallb-system
+  - name: prereqs
+    block:
+    - name: install pip packages
+      pip:
+        name:
+          - kubernetes
+          - netaddr
+    - name: add hashicorp helm repo
+      kubernetes.core.helm_repository:
+        repo_url: https://helm.releases.hashicorp.com
+        name: hashicorp
+        force: true
+    tags:
+    - always
 
-  - name: get docker network
-    command: docker network inspect -f {% raw %}'{{(index .IPAM.Config 0).Subnet}}'{% endraw %} kind
-    register: docker_network_cidr
-  - name: apply IPAddressPool
-    kubernetes.core.k8s:
-      context: kind-consul-server
-      definition:
-        apiVersion: metallb.io/v1beta1
-        kind: IPAddressPool
-        metadata:
-          name: example
-          namespace: metallb-system
-        spec:
-          addresses:
-          - "{{ docker_network_cidr.stdout | ansible.utils.ipsubnet(20, -1) | ansible.utils.ipaddr('range_usable')}}"
-  - name: apply L2Advertisment
-    kubernetes.core.k8s:
-      context: kind-consul-server
-      definition:
-        apiVersion: metallb.io/v1beta1
-        kind: L2Advertisement
-        metadata:
-          name: empty
-          namespace: metallb-system
+  - name: start Kind Clusters
+    block:
+    - name: Check if Kind Cluster is running
+      command: kind get clusters
+      register: kind_cluster_running
+    - name: Create consul clusters
+      when: not item in kind_cluster_running.stdout_lines
+      command: kind create cluster -n {{item}} --image={{k8s_image}}
+      loop: '{{clusters}}'
+    - name: create consul ns
+      kubernetes.core.k8s:
+        context: kind-{{item}}
+        api_version: v1
+        name: consul
+        kind: Namespace
+      loop: '{{clusters}}'
+    tags:
+    - always
 
-  - name: create consul ns
-    kubernetes.core.k8s:
-      context: kind-{{item}}
-      api_version: v1
-      name: consul
-      kind: Namespace
-    loop: '{{clusters}}'
+  - name: run metllb
+    block:
+    - name: apply metllb
+      kubernetes.core.k8s:
+        context: kind-consul-server
+        src: "{{playbook_dir}}/metallb-native.yaml"
+    - name: wait for ready
+      kubernetes.core.k8s_info:
+        context: kind-consul-server
+        kind: Pod
+        wait: yes
+        label_selectors:
+          - app=metallb
+        namespace: metallb-system
+    - name: get docker network
+      command: docker network inspect -f {% raw %}'{{(index .IPAM.Config 0).Subnet}}'{% endraw %} kind
+      register: docker_network_cidr
+    - name: apply IPAddressPool
+      kubernetes.core.k8s:
+        context: kind-consul-server
+        definition:
+          apiVersion: metallb.io/v1beta1
+          kind: IPAddressPool
+          metadata:
+            name: example
+            namespace: metallb-system
+          spec:
+            addresses:
+            - "{{ docker_network_cidr.stdout | ansible.utils.ipsubnet(20, -1) | ansible.utils.ipaddr('range_usable')}}"
+    - name: apply L2Advertisment
+      kubernetes.core.k8s:
+        context: kind-consul-server
+        definition:
+          apiVersion: metallb.io/v1beta1
+          kind: L2Advertisement
+          metadata:
+            name: empty
+            namespace: metallb-system
+    tags:
+    - lb
 
   - name: create consul-gossip-encrytion-key
     kubernetes.core.k8s:
@@ -79,51 +97,81 @@
           namespace: consul
         data:
           key: "{{ 'JXlUmkim2qn/jiTm7Gj6Qh8GI6s/PTHZhJJSIS97Ung=' | b64encode }}"
+    tags:
+    - always
 
-  - name: hashicorp helm repo
-    kubernetes.core.helm_repository:
-      repo_url: https://helm.releases.hashicorp.com
-      name: hashicorp
+  - name: set lb values
+    set_fact:
+      server_values:
+        server:
+          exposeService:
+            type: LoadBalancer
+    tags:
+    - lb
+
+
+  - name: set nodeport values
+    set_fact:
+      server_values:
+        server:
+          exposeService:
+            type: NodePort
+            nodePort:
+              http: 30010
+              https: 30011
+              serf: 30012
+              rpc: 30013
+              grpc: 30014
+    tags:
+    - np
+
   - name: deploy consul server
-    kubernetes.core.helm:
-      context: kind-consul-server
-      release_name: server
-      chart_ref: hashicorp/consul
-      release_namespace: consul
-      values_files:
-      - '{{playbook_dir}}/values_server.yaml'
-      chart_version: '{{consul_helm_version}}'
-      wait: true
-  - name: get consul-ca-cert
-    kubernetes.core.k8s_info:
-      context: kind-consul-server
-      kind: Secret
-      namespace: consul
-      name: server-consul-ca-cert
-    register: server_consul_ca_cert
-  - name: get consul-bootstrap-acl-token
-    kubernetes.core.k8s_info:
-      context: kind-consul-server
-      kind: Secret
-      namespace: consul
-      name: server-consul-bootstrap-acl-token
-    register: server_consul_bootstrap_acl_token
-  - name: apply client server_consul_ca_cert
-    kubernetes.core.k8s:
-      context: kind-consul-client
-      definition: '{{server_consul_ca_cert.resources.0 | ansible.utils.remove_keys(target=["resourceVersion","uid"])}}'
-  - name: apply client server_consul_bootstrap_acl_token
-    kubernetes.core.k8s:
-      context: kind-consul-client
-      definition: '{{server_consul_bootstrap_acl_token.resources.0 | ansible.utils.remove_keys(target=["resourceVersion","uid"])}}'
+    block:
+    - name: helm install consul server
+      kubernetes.core.helm:
+        context: kind-consul-server
+        release_name: server
+        chart_ref: hashicorp/consul
+        release_namespace: consul
+        values_files:
+        - '{{playbook_dir}}/values_server.yaml'
+        values: '{{server_values}}'
+        chart_version: '{{consul_helm_version}}'
+        wait: true
+    - name: get consul-ca-cert
+      kubernetes.core.k8s_info:
+        context: kind-consul-server
+        kind: Secret
+        namespace: consul
+        name: server-consul-ca-cert
+      register: server_consul_ca_cert
+    - name: get consul-bootstrap-acl-token
+      kubernetes.core.k8s_info:
+        context: kind-consul-server
+        kind: Secret
+        namespace: consul
+        name: server-consul-bootstrap-acl-token
+      register: server_consul_bootstrap_acl_token
+    - name: apply client server_consul_ca_cert
+      kubernetes.core.k8s:
+        context: kind-consul-client
+        definition: '{{server_consul_ca_cert.resources.0 | ansible.utils.remove_keys(target=["resourceVersion","uid"])}}'
+    - name: apply client server_consul_bootstrap_acl_token
+      kubernetes.core.k8s:
+        context: kind-consul-client
+        definition: '{{server_consul_bootstrap_acl_token.resources.0 | ansible.utils.remove_keys(target=["resourceVersion","uid"])}}'
+    tags:
+    - always
 
-  - name: get kubernetes ep
+  - name: get client kubernetes api ep
     kubernetes.core.k8s_info:
       context: kind-consul-client
       kind: Endpoints
       namespace: default
       name: kubernetes
     register: client_k8s_ep
+    tags:
+    - always
 
   - name: get consul ext ip
     kubernetes.core.k8s_info:
@@ -132,6 +180,37 @@
       namespace: consul
       name: server-consul-expose-servers
     register: server_expose_svc
+    tags:
+    - always
+
+  - name: set lb values
+    set_fact:
+      client_values:
+        externalServers:
+          hosts: ["{{server_expose_svc.resources.0.status.loadBalancer.ingress.0.ip}}"]
+          k8sAuthMethodHost: https://{{client_k8s_ep.resources.0.subsets.0.addresses.0.ip}}:6443
+    tags:
+    - lb
+
+  - name: set np values
+    block:
+    - name: get server kubernetes api ep
+      kubernetes.core.k8s_info:
+        context: kind-consul-server
+        kind: Endpoints
+        namespace: default
+        name: kubernetes
+      register: server_k8s_ep
+    - name: set np values
+      set_fact:
+        client_values:
+          externalServers:
+            hosts: ["{{server_k8s_ep.resources.0.subsets.0.addresses.0.ip}}"]
+            httpsPort: 30011
+            grpcPort: 30014
+            k8sAuthMethodHost: https://{{client_k8s_ep.resources.0.subsets.0.addresses.0.ip}}:6443
+    tags:
+    - np
 
   - name: deploy consul client
     kubernetes.core.helm:
@@ -143,19 +222,22 @@
       wait: true
       values_files:
       - '{{playbook_dir}}/values_client.yaml'
-      values:
-        externalServers:
-          hosts: ["{{server_expose_svc.resources.0.status.loadBalancer.ingress.0.ip}}"]
-          k8sAuthMethodHost: https://{{client_k8s_ep.resources.0.subsets.0.addresses.0.ip}}:6443
+      values: '{{client_values}}'
+    tags:
+    - always
 
-  - name: deploy static server
-    kubernetes.core.k8s:
-      context: kind-consul-server
-      src: "{{playbook_dir}}/static-server.yaml"
-      namespace: default
+  - name: install test app
+    block:
+    - name: deploy static server
+      kubernetes.core.k8s:
+        context: kind-consul-server
+        src: "{{playbook_dir}}/static-server.yaml"
+        namespace: default
 
-  - name: deploy static client
-    kubernetes.core.k8s:
-      context: kind-consul-client
-      src: "{{playbook_dir}}/static-client.yaml"
-      namespace: default
+    - name: deploy static client
+      kubernetes.core.k8s:
+        context: kind-consul-client
+        src: "{{playbook_dir}}/static-client.yaml"
+        namespace: default
+    tags:
+    - always
