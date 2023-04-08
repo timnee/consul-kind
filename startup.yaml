@@ -7,7 +7,7 @@
     - consul-server
     - consul-client
     consul_helm_version: 1.1.1
-    k8s_image: kindest/node:v1.23.17@sha256:e5fd1d9cd7a9a50939f9c005684df5a6d145e8d695e78463637b79464292e66c
+    k8s_image: kindest/node:v1.26.3@sha256:61b92f38dff6ccc29969e7aa154d34e38b89443af1a2c14e6cfbd2df6419c66f
 
   tasks:
   - name: prereqs
