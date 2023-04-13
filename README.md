@@ -1,22 +1,58 @@
-# Server
+Kind implementation of example from [Deploy Single Consul Datacenter Across Multiple Kubernetes Clusters](https://developer.hashicorp.com/consul/docs/k8s/deployment-configurations/single-dc-multi-k8s)
 
-Ref: [Deploy Single Consul Datacenter Across Multiple Kubernetes Clusters](https://developer.hashicorp.com/consul/docs/k8s/deployment-configurations/single-dc-multi-k8s)
+# Rereqs
 
-1. `kubectl create secret generic consul-gossip-encryption-key --from-literal=key=$(consul keygen)`
-2. `helm install server --values cluster1-values.yaml hashicorp/consul`
-3. `kubectl get secret server-consul-ca-cert server-consul-bootstrap-acl-token --output yaml > cluster1-credentials.yaml`
+To run this exmaple, you need the following installed:
+* kind
+* helm
+* ansible
 
-Get LB ip
-`kubectl get svc server-consul-expose-servers -o jsonpath='{.status.loadBalancer.ingress[*].ip}'`
 
-# Consul1
+# How to run
 
-1. switch context
-2. update `externalServers.hosts` to LB ip in cluster2-vaules.yaml
-3. `kubectl apply --filename cluster1-credentials.yaml`
-4. `helm install consul --values cluster2-values.yaml hashicorp/consul`
+Run in NodePort mode as decribed in the doc above
 
-# Validate Service Mesh
+```
+ansible-playbook startup.yaml --tags np
+```
 
-1. switch context to server and apply static-server.yaml
-2. switch context to consul1 and apply static-client.yaml
+Alternatively you can run in LoadBalancer mode.  Note the limitation of kind [loadbalancer](https://kind.sigs.k8s.io/docs/user/loadbalancer/) if you running on MacOS or Windows.
+
+```
+ansible-playbook startup.yaml --tags lb
+```
+
+To access the consule ui, port-foward service server-consul-ui to https://localhost:8443
+
+```
+kubectl port-forward svc/server-consul-ui 8443:443 -n consul --context kind-consul-server
+```
+
+# Cleanup
+
+```
+ansible-playbook cleanup.yaml
+```
+
+# Known issue
+
+Unable to verify Consul Service Mesh works with either NodePort or LoadBalancer mode.  Getting Connection reset by peer
+
+```
+$ kubectl --context kind-consul-client exec deploy/static-client -- curl -v localhost:1234
+Defaulted container "static-client" out of: static-client, consul-dataplane, consul-connect-inject-init (init)
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0*   Trying 127.0.0.1:1234...
+* Connected to localhost (127.0.0.1) port 1234 (#0)
+> GET / HTTP/1.1
+> Host: localhost:1234
+> User-Agent: curl/8.0.1-DEV
+> Accept: */*
+>
+  0     0    0     0    0     0      0      0 --:--:--  0:00:04 --:--:--     0* Recv failure: Connection reset by peer
+  0     0    0     0    0     0      0      0 --:--:--  0:00:05 --:--:--     0
+* Closing connection 0
+curl: (56) Recv failure: Connection reset by peer
+command terminated with exit code 56
+```
