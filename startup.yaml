@@ -201,12 +201,20 @@
         namespace: default
         name: kubernetes
       register: server_k8s_ep
+    - name: get server ui service
+      kubernetes.core.k8s_info:
+        context: kind-consul-server
+        kind: Service
+        namespace: consul
+        name: server-consul-ui
+      register: server_consul_ui
+    # - debug: var=server_consul_ui
     - name: set np values
       set_fact:
         client_values:
           externalServers:
             hosts: ["{{server_k8s_ep.resources.0.subsets.0.addresses.0.ip}}"]
-            httpsPort: 30011
+            httpsPort: '{{server_consul_ui.resources.0.spec.ports.0.nodePort}}'
             grpcPort: 30014
             k8sAuthMethodHost: https://{{client_k8s_ep.resources.0.subsets.0.addresses.0.ip}}:6443
     tags:
